@@ -156,6 +156,7 @@ export async function runCampaign(opts: CampaignOptions): Promise<CampaignResult
   for (let run = 1; run <= totalRuns; run++) {
     // Adaptation phase (runs 2+)
     let priorStrategies: Strategy[] | undefined;
+    let currentAdaptationResults: import('./types.js').AdaptationResult[] | undefined;
     if (run > 1) {
       const priorResult = allRunResults[run - 2];
 
@@ -186,6 +187,7 @@ export async function runCampaign(opts: CampaignOptions): Promise<CampaignResult
 
       priorStrategies = strategies;
       strategies = adaptResult.strategies;
+      currentAdaptationResults = adaptResult.results;
     }
 
     // Run simulation
@@ -222,7 +224,7 @@ export async function runCampaign(opts: CampaignOptions): Promise<CampaignResult
       strategies: [...strategies],
       drift,
       convergence,
-      adaptationResults: run > 1 ? allRunResults[run - 2]?.adaptationResults : undefined,
+      adaptationResults: currentAdaptationResults,
     };
 
     allRunResults.push(runResult);
