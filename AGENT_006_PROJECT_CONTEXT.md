@@ -100,8 +100,23 @@ Agent 006 stress-tests incentive designs by running AI-generated adversarial str
 5. **Campaigns are non-deterministic** — Claude API responses vary; fixture-adaptation covers testing
 6. **No runtime archetype enforcement** — personality enforced via prompt, monitored via convergence metric
 
+## v0.2.0 Audit
+
+8-round structured audit completed + final pass:
+
+| Round | Focus | Result |
+|-------|-------|--------|
+| 1 | Adapter & Observation Packets | 3 findings fixed (truncation collapse round, rationing detection, prompt wording) |
+| 2 | Metrics & Canonical State Battery | 2 findings (new Function() accepted/documented, dead parameter removed) |
+| 3 | Campaign Runner & Loop Logic | 1 finding fixed (adaptationResults referenced wrong run) |
+| 4 | Sandbox & Validation | Clean |
+| 5 | Reporter & Cross-Run Analysis | Clean |
+| 6 | CLI & Error Handling | 1 finding fixed (--fixtures default --runs to 1) |
+| 7 | Documentation Accuracy | 7 findings fixed (README v0.2.0 update, AGENTS.md indexing, test counts) |
+| 8 | Dependencies & Supply Chain | 1 finding fixed (package.json version bump) |
+| Final | Full codebase security + quality | Clean — all sub-agent findings verified as false positives or accepted risks |
+
 ## Next Steps
 
-- Audit v0.2.0 implementation
 - Run live campaign tests with API key
 - Article writing

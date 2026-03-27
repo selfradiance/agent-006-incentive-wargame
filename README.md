@@ -123,7 +123,7 @@ Key test categories: economy engine (13), fixture strategies (22), metrics (24),
 | v0.1.0 8-round code audit | Claude Code | Logic, security, sandbox, prompts, CLI, metrics, docs, deps | 14 findings fixed across 8 rounds; 125 tests green |
 | v0.1.0 cold-eyes audit | Codex | Full codebase security + code quality review | Clean pass — 0 critical/high/medium findings |
 | v0.1.0 cross-verification | Claude Code | Security-focused review of final codebase | Clean pass — confirmed sandbox isolation, IPC safety, economy math |
-| v0.2.0 8-round code audit | Claude Code | Adapter, metrics, campaign loop, sandbox, reporter, CLI, docs, deps | In progress |
+| v0.2.0 8-round code audit | Claude Code | Adapter, metrics, campaign loop, sandbox, reporter, CLI, docs, deps | 8 rounds + final pass complete; 15 findings fixed, 167 tests green |
 
 ## Design Specs
 
