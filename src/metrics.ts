@@ -212,7 +212,7 @@ export function computeAllMetrics(log: SimulationLog): AllMetrics {
 export function buildCanonicalStateBattery(config: GameConfig): CanonicalState[] {
   const { poolSize, regenerationRate, maxExtractionRate, agentCount, rounds } = config;
 
-  function makeState(label: string, poolFraction: number, roundNum: number, recentRationing: number[]): CanonicalState {
+  function makeState(label: string, poolFraction: number, roundNum: number): CanonicalState {
     const poolLevel = poolSize * poolFraction;
     // Build a synthetic history of the specified length with rationing signals
     const histLen = Math.max(0, roundNum - 1);
@@ -238,11 +238,11 @@ export function buildCanonicalStateBattery(config: GameConfig): CanonicalState[]
   }
 
   return [
-    makeState('Healthy', 0.85, 3, []),
-    makeState('Stressed', 0.50, Math.ceil(rounds / 2), [1, 1]),
-    makeState('Near-Collapse', 0.15, Math.ceil(rounds * 0.8), [1, 1, 1]),
-    makeState('Post-Rationing', 0.50, Math.ceil(rounds / 3), [1]),
-    makeState('Stable-Growth', 0.70, Math.ceil(rounds * 0.6), []),
+    makeState('Healthy', 0.85, 3),
+    makeState('Stressed', 0.50, Math.ceil(rounds / 2)),
+    makeState('Near-Collapse', 0.15, Math.ceil(rounds * 0.8)),
+    makeState('Post-Rationing', 0.50, Math.ceil(rounds / 3)),
+    makeState('Stable-Growth', 0.70, Math.ceil(rounds * 0.6)),
   ];
 }
 
@@ -319,6 +319,11 @@ export function extractRunSnapshots(log: SimulationLog): CanonicalState[] {
 
 // Execute a strategy function (from source code) against a canonical state.
 // Returns the extraction amount (clamped, normalized).
+// SECURITY NOTE: Uses new Function() in the main process, not the sandboxed VM.
+// Only called on strategies that have already passed the sandbox validator.
+// This is acceptable because: (1) strategies are validator-checked for blocked patterns,
+// (2) they've already been executed in the sandboxed child during actual simulation,
+// (3) this is internal metrics computation, not an execution boundary.
 function executeStrategyAgainstState(code: string, state: CanonicalState, agentIndex: number): number {
   // Build a StrategyState from the CanonicalState for the given agent
   const strategyState: StrategyState = {
