@@ -2,7 +2,7 @@
 // Claude API: simulation log + metrics → structured findings report.
 // Fallback to metrics-only on API failure.
 
-import type { SimulationLog, AllMetrics } from './types.js';
+import type { SimulationLog, AllMetrics, CampaignResult } from './types.js';
 import { getAnthropicClient } from './anthropic-client.js';
 
 const MODEL = 'claude-sonnet-4-20250514';
@@ -171,5 +171,175 @@ export function formatMetricsOnly(metrics: AllMetrics): string {
     '',
     '══════════════════════════════════════════',
   ];
+  return lines.join('\n');
+}
+
+// ═══════════════════════════════════════════════════════════
+// v0.2.0: Campaign Cross-Run Report
+// ═══════════════════════════════════════════════════════════
+
+function buildCampaignReporterInput(campaign: CampaignResult): string {
+  const runs = campaign.runs;
+  const config = runs[0].log.config;
+
+  // Per-run metric summaries
+  const perRunSummaries = runs.map(run => {
+    const m = run.metrics;
+    const survival = m.poolSurvival.survived ? 'SURVIVED' :
+      m.poolSurvival.collapseRound ? `COLLAPSED (round ${m.poolSurvival.collapseRound})` : 'INCOMPLETE';
+
+    let summary = `### Run ${run.runNumber}
+- **Outcome:** ${survival}
+- **Gini:** ${m.gini.gini}
+- **Over-Extraction Rate:** ${(m.overExtractionRate.overExtractionRate * 100).toFixed(1)}%
+- **System Efficiency:** ${m.systemEfficiency.efficiency}
+- **Resource Health:** min ${(m.resourceHealth.minPoolFraction * 100).toFixed(1)}%, avg ${(m.resourceHealth.avgPoolFraction * 100).toFixed(1)}%, final ${(m.resourceHealth.finalPoolFraction * 100).toFixed(1)}%
+- **Per-Agent Wealth:** ${m.agentWealth.map(a => `${a.archetypeName}: ${a.totalWealth}`).join(', ')}`;
+
+    if (run.drift) {
+      summary += `\n- **Strategy Drift:** avg ${run.drift.average} | per-agent: ${run.drift.perAgent.map((d, i) => `${runs[0].log.archetypes[i].name}: ${d}`).join(', ')}`;
+    }
+    summary += `\n- **Behavioral Convergence:** ${run.convergence.score}`;
+
+    return summary;
+  }).join('\n\n');
+
+  // Adaptation results summary
+  const adaptationSummary = runs.slice(1).map(run => {
+    const results = run.adaptationResults;
+    if (!results) return '';
+    const fallbacks = results.filter(r => r.usedFallback);
+    if (fallbacks.length === 0) return `Run ${run.runNumber}: All 7 agents adapted successfully.`;
+    return `Run ${run.runNumber}: ${fallbacks.length} agent(s) used fallback — ${fallbacks.map(r => r.archetypeName).join(', ')}`;
+  }).filter(Boolean).join('\n');
+
+  // Resilience trend
+  const trend = campaign.resilienceTrend;
+  const trendStr = trend.points.map((p, i) =>
+    `Run ${i + 1}: survived ${p.survivalRounds} rounds, final pool ${(p.finalPoolHealth * 100).toFixed(1)}%`
+  ).join('\n');
+
+  // Theater and collapse flags
+  const theaterStr = campaign.adaptationTheater.detected
+    ? `DETECTED — ${campaign.adaptationTheater.runTransitions.filter(t => t.verdict === 'theater').map(t => `Run ${t.fromRun}→${t.toRun}: drift ${t.averageDrift}`).join('; ')}`
+    : 'Not detected';
+
+  const collapseStr = campaign.archetypeCollapse.detected
+    ? `DETECTED (convergence: ${campaign.archetypeCollapse.finalConvergence}) — ${campaign.archetypeCollapse.message}`
+    : `Not detected (convergence: ${campaign.archetypeCollapse.finalConvergence})`;
+
+  return `You are analyzing the results of a multi-run economic simulation campaign: Tragedy of the Commons with recursive strategy adaptation.
+
+## Campaign Configuration
+- Pool size: ${config.poolSize}
+- Regeneration rate: ${config.regenerationRate}
+- Max extraction rate: ${config.maxExtractionRate}
+- Rounds per run: ${config.rounds}
+- Agents: ${config.agentCount}
+- Total runs: ${runs.length}
+${campaign.aborted ? `\n**CAMPAIGN ABORTED:** ${campaign.abortReason}\n` : ''}
+
+## Archetypes
+${runs[0].log.archetypes.map(a => `${a.index}. **${a.name}**: ${a.description}`).join('\n')}
+
+## Per-Run Results
+${perRunSummaries}
+
+## Adaptation Summary
+${adaptationSummary || 'No adaptation phases (single run).'}
+
+## Resilience Trend (${trend.trend})
+${trendStr}
+
+## Adaptation Theater
+${theaterStr}
+
+## Archetype Collapse
+${collapseStr}
+
+## Instructions
+Generate a structured cross-run report with these exact sections:
+
+1. **Campaign Summary** — 3-4 sentences: overall outcome, did the commons survive across runs, did adaptation help or hurt?
+2. **Strategy Evolution** — one paragraph per archetype: how did each adapt across runs? Did cooperators stay cooperative? Did defectors escalate? What changed and why?
+3. **Cross-Run Metric Trends** — table or list showing how key metrics changed across runs (Gini, survival, pool health, efficiency)
+4. **Adaptation Quality** — was adaptation meaningful (high drift after poor outcomes) or nominal (theater detected)? Was it equilibrium (low drift after good outcomes)?
+5. **Collapse Analysis** — if any run collapsed: which run, which round, how does this relate to adapted strategies? If Run 1 collapsed, frame later runs as "adaptation under demonstrated fragility."
+6. **Archetype Collapse Analysis** — if convergence > 0.8: flag it, explain what it means for the experiment. If not detected, note the diversity was maintained.
+7. **Campaign Verdict** — did the incentive design hold up under feedback-driven strategy revision? Frame as empirical observation about this specific campaign, not a general claim.
+
+Important:
+- Be empirical, not prescriptive. Report what happened in this specific campaign.
+- Do not invent or hallucinate data not included above.
+- Frame findings as observations about LLM-mediated strategy adaptation, not claims about general AI behavior.
+- If the campaign was aborted, analyze partial results and note the limitation.`;
+}
+
+export async function generateCampaignReport(
+  campaign: CampaignResult,
+): Promise<ReportResult> {
+  try {
+    const client = getAnthropicClient();
+    const prompt = buildCampaignReporterInput(campaign);
+
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const report = response.content
+      .filter(block => block.type === 'text')
+      .map(block => block.text)
+      .join('')
+      .trim();
+
+    if (!report) {
+      throw new Error('Claude returned an empty campaign report');
+    }
+
+    return { report, metricsOnly: false };
+  } catch (err) {
+    return {
+      report: null,
+      metricsOnly: true,
+      error: `Campaign report generation failed — ${(err as Error).message}`,
+    };
+  }
+}
+
+export function formatCampaignMetricsOnly(campaign: CampaignResult): string {
+  const lines = [
+    '══════════════════════════════════════════════════════',
+    '  CAMPAIGN METRICS (AI analysis unavailable)',
+    '══════════════════════════════════════════════════════',
+    '',
+  ];
+
+  for (const run of campaign.runs) {
+    const m = run.metrics;
+    const survival = m.poolSurvival.survived ? 'SURVIVED' :
+      m.poolSurvival.collapseRound ? `COLLAPSED (round ${m.poolSurvival.collapseRound})` : 'INCOMPLETE';
+
+    lines.push(`  ── Run ${run.runNumber} ──`);
+    lines.push(`    Outcome:       ${survival}`);
+    lines.push(`    Gini:          ${m.gini.gini}`);
+    lines.push(`    Over-Extract:  ${(m.overExtractionRate.overExtractionRate * 100).toFixed(1)}%`);
+    lines.push(`    Efficiency:    ${m.systemEfficiency.efficiency}`);
+    lines.push(`    Pool Health:   final ${(m.resourceHealth.finalPoolFraction * 100).toFixed(1)}%`);
+    if (run.drift) {
+      lines.push(`    Drift:         ${run.drift.average}`);
+    }
+    lines.push(`    Convergence:   ${run.convergence.score}`);
+    lines.push('');
+  }
+
+  const trend = campaign.resilienceTrend;
+  lines.push(`  Resilience Trend: ${trend.trend}`);
+  lines.push(`  Adaptation Theater: ${campaign.adaptationTheater.detected ? 'DETECTED' : 'None'}`);
+  lines.push(`  Archetype Collapse: ${campaign.archetypeCollapse.detected ? 'DETECTED' : 'None'}`);
+  lines.push('');
+  lines.push('══════════════════════════════════════════════════════');
+
   return lines.join('\n');
 }
