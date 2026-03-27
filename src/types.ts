@@ -148,3 +148,133 @@ export interface AllMetrics {
   collapseVelocity: CollapseVelocityResult;
   firstOverExtraction: FirstOverExtractionResult | null;
 }
+
+// --- v0.2.0: Campaign Types ---
+
+// Canonical state used for drift/convergence measurement
+export interface CanonicalState {
+  label: string;                // e.g. "Healthy", "Stressed", "Near-Collapse"
+  round: number;
+  totalRounds: number;
+  poolLevel: number;
+  startingPoolSize: number;
+  regenerationRate: number;
+  maxExtraction: number;
+  agentCount: number;
+  myWealth: number;
+  myHistory: number[];
+  allHistory: number[][];
+  poolHistory: number[];
+  sustainableShare: number;
+  isRunSpecific?: boolean;      // true for run-specific snapshots (not fixed canonical)
+}
+
+// Observation packet: what each agent sees between runs
+export interface ObservationPacket {
+  agentIndex: number;
+  runNumber: number;
+  roundCount: number;
+  private: {
+    wealthPerRound: number[];
+    requestedPerRound: number[];
+    receivedPerRound: number[];
+    wasRationedPerRound: boolean[];
+  };
+  public: {
+    poolLevelPerRound: number[];
+    totalExtractionPerRound: number[];
+    msyThresholdPerRound: number[];
+    agentExtractionsPerRound: number[][];
+  };
+  metrics: {
+    gini: number;
+    abuseRate: number;
+    survivalRounds: number;
+    poolDepletionRate: number;
+    totalExtraction: number;
+    fairnessIndex: number;
+    collapsed: boolean;
+    perAgentWealth: number[];
+  };
+  truncated?: {
+    omittedRounds: { start: number; end: number };
+    meanExtraction: number;
+    meanPoolLevel: number;
+    rationingFrequency: number;
+    totalVsMsyRatio: number;
+  };
+}
+
+// Result of a single agent's adaptation attempt
+export interface AdaptationResult {
+  agentIndex: number;
+  archetypeName: string;
+  newStrategy: Strategy | null;  // null = fallback to prior
+  usedFallback: boolean;
+  validationFailed: boolean;
+  error?: string;
+}
+
+// Per-run result within a campaign
+export interface RunResult {
+  runNumber: number;
+  log: SimulationLog;
+  metrics: AllMetrics;
+  strategies: Strategy[];
+  drift?: StrategyDriftResult;       // undefined for Run 1
+  convergence: BehavioralConvergenceResult;
+  adaptationResults?: AdaptationResult[];  // undefined for Run 1
+}
+
+// Strategy Drift (metric 9)
+export interface StrategyDriftResult {
+  perAgent: number[];           // 0-1 drift score per agent
+  average: number;              // mean across all agents
+}
+
+// Behavioral Convergence (metric 10)
+export interface BehavioralConvergenceResult {
+  score: number;                // 0 = maximally diverse, 1 = identical behavior
+}
+
+// Resilience Trend data point (metric 11)
+export interface ResilienceTrendPoint {
+  survivalRounds: number;
+  finalPoolHealth: number;      // pool level as fraction of initial pool
+}
+
+// Resilience Trend (metric 11)
+export interface ResilienceTrendResult {
+  points: ResilienceTrendPoint[];
+  trend: 'positive' | 'negative' | 'flat';
+}
+
+// Adaptation Theater detection
+export interface AdaptationTheaterResult {
+  detected: boolean;
+  runTransitions: {
+    fromRun: number;
+    toRun: number;
+    averageDrift: number;
+    priorCollapsed: boolean;
+    priorHeavilyRationed: boolean;
+    verdict: 'theater' | 'equilibrium' | 'normal';
+  }[];
+}
+
+// Archetype Collapse detection
+export interface ArchetypeCollapseResult {
+  detected: boolean;
+  finalConvergence: number;
+  message?: string;
+}
+
+// Full campaign result
+export interface CampaignResult {
+  runs: RunResult[];
+  resilienceTrend: ResilienceTrendResult;
+  adaptationTheater: AdaptationTheaterResult;
+  archetypeCollapse: ArchetypeCollapseResult;
+  aborted: boolean;
+  abortReason?: string;
+}
