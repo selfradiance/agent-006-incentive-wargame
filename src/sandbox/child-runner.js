@@ -25,6 +25,22 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype;
 }
 
+function isFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isNumberArray(value, expectedLength) {
+  return Array.isArray(value)
+    && value.length === expectedLength
+    && value.every(isFiniteNumber);
+}
+
+function isHistoryMatrix(value, expectedLength) {
+  return Array.isArray(value)
+    && value.length === expectedLength
+    && value.every(entry => Array.isArray(entry) && entry.every(isFiniteNumber));
+}
+
 function deepFreeze(obj) {
   if (obj === null || typeof obj !== 'object') return obj;
   Object.freeze(obj);
@@ -98,13 +114,39 @@ function executeRound(strategies, state) {
   return extractions;
 }
 
+function isValidExecuteState(state, strategyCount) {
+  return isPlainObject(state)
+    && Number.isInteger(state.round)
+    && state.round >= 1
+    && Number.isInteger(state.totalRounds)
+    && state.totalRounds >= state.round
+    && isFiniteNumber(state.poolLevel)
+    && state.poolLevel >= 0
+    && isFiniteNumber(state.startingPoolSize)
+    && state.startingPoolSize > 0
+    && isFiniteNumber(state.regenerationRate)
+    && state.regenerationRate >= 0
+    && state.regenerationRate <= 1
+    && isFiniteNumber(state.maxExtraction)
+    && state.maxExtraction >= 0
+    && Number.isInteger(state.agentCount)
+    && state.agentCount === strategyCount
+    && state.agentCount >= 1
+    && isNumberArray(state.agentWealth, state.agentCount)
+    && isHistoryMatrix(state.agentHistory, state.agentCount)
+    && Array.isArray(state.poolHistory)
+    && state.poolHistory.every(isFiniteNumber)
+    && isFiniteNumber(state.sustainableShare)
+    && state.sustainableShare >= 0;
+}
+
 function isExecuteRoundMessage(msg) {
   return isPlainObject(msg)
     && msg.type === 'execute_round'
     && Number.isInteger(msg.requestId)
     && Array.isArray(msg.strategies)
     && msg.strategies.every(strategy => typeof strategy === 'string')
-    && isPlainObject(msg.state);
+    && isValidExecuteState(msg.state, msg.strategies.length);
 }
 
 safeProcess.on('message', (msg) => {

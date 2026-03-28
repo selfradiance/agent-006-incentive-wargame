@@ -6,7 +6,6 @@ import type {
   GameConfig,
   Strategy,
   CanonicalState,
-  StrategyState,
   GiniResult,
   PoolSurvivalResult,
   AgentWealthResult,
@@ -25,10 +24,12 @@ import type {
   RunResult,
 } from './types.js';
 import { computeMaxExtraction, computeSustainableShare } from './economy.js';
+import { RoundDispatcher, normalizeExtraction } from './sandbox/executor.js';
 
 // 1. Gini Coefficient — wealth inequality
 export function computeGini(wealth: number[]): GiniResult {
   const n = wealth.length;
+  if (n === 0) return { gini: 0 };
   const mean = wealth.reduce((s, w) => s + w, 0) / n;
 
   if (mean === 0) return { gini: 0 };
@@ -216,9 +217,12 @@ export function buildCanonicalStateBattery(config: GameConfig): CanonicalState[]
     const poolLevel = poolSize * poolFraction;
     // Build a synthetic history of the specified length with rationing signals
     const histLen = Math.max(0, roundNum - 1);
-    const myHistory = new Array(histLen).fill(computeSustainableShare(poolLevel, regenerationRate, agentCount));
-    const allHistory = Array.from({ length: agentCount }, () => [...myHistory]);
+    const sharedHistory = new Array(histLen).fill(
+      computeSustainableShare(poolLevel, regenerationRate, agentCount),
+    );
+    const allHistory = Array.from({ length: agentCount }, () => [...sharedHistory]);
     const poolHistory = new Array(histLen).fill(poolLevel);
+    const wealth = sharedHistory.reduce((sum, value) => sum + value, 0);
 
     return {
       label,
@@ -229,8 +233,7 @@ export function buildCanonicalStateBattery(config: GameConfig): CanonicalState[]
       regenerationRate,
       maxExtraction: computeMaxExtraction(poolLevel, maxExtractionRate),
       agentCount,
-      myWealth: myHistory.reduce((s, v) => s + v, 0),
-      myHistory,
+      agentWealth: new Array(agentCount).fill(wealth),
       allHistory,
       poolHistory,
       sustainableShare: computeSustainableShare(poolLevel, regenerationRate, agentCount),
@@ -257,9 +260,11 @@ export function extractRunSnapshots(log: SimulationLog): CanonicalState[] {
     // Reconstruct state as it was at the START of this round
     const roundIndex = r.round - 1;
     const histLen = Math.max(0, roundIndex);
-    const myHistory = log.finalState.agentHistory[0]?.slice(0, histLen) ?? [];
     const allHistory = log.finalState.agentHistory.map(h => h.slice(0, histLen));
     const poolHistory = log.finalState.poolHistory.slice(0, histLen);
+    const agentWealth = r.round > 1
+      ? [...log.rounds[r.round - 2].agentWealth]
+      : new Array(config.agentCount).fill(0);
 
     return {
       label,
@@ -270,8 +275,7 @@ export function extractRunSnapshots(log: SimulationLog): CanonicalState[] {
       regenerationRate: config.regenerationRate,
       maxExtraction: computeMaxExtraction(r.poolBefore, config.maxExtractionRate),
       agentCount: config.agentCount,
-      myWealth: r.round > 1 ? log.rounds[r.round - 2].agentWealth[0] : 0,
-      myHistory,
+      agentWealth,
       allHistory,
       poolHistory,
       sustainableShare: computeSustainableShare(r.poolBefore, config.regenerationRate, config.agentCount),
@@ -317,16 +321,8 @@ export function extractRunSnapshots(log: SimulationLog): CanonicalState[] {
 
 // --- Strategy Execution Against Canonical States ---
 
-// Execute a strategy function (from source code) against a canonical state.
-// Returns the extraction amount (clamped, normalized).
-// SECURITY NOTE: Uses new Function() in the main process, not the sandboxed VM.
-// Only called on strategies that have already passed the sandbox validator.
-// This is acceptable because: (1) strategies are validator-checked for blocked patterns,
-// (2) they've already been executed in the sandboxed child during actual simulation,
-// (3) this is internal metrics computation, not an execution boundary.
-function executeStrategyAgainstState(code: string, state: CanonicalState, agentIndex: number): number {
-  // Build a StrategyState from the CanonicalState for the given agent
-  const strategyState: StrategyState = {
+function buildDispatchState(state: CanonicalState): Record<string, unknown> {
+  return {
     round: state.round,
     totalRounds: state.totalRounds,
     poolLevel: state.poolLevel,
@@ -334,55 +330,74 @@ function executeStrategyAgainstState(code: string, state: CanonicalState, agentI
     regenerationRate: state.regenerationRate,
     maxExtraction: state.maxExtraction,
     agentCount: state.agentCount,
-    agentIndex,
-    myWealth: state.myWealth,
-    myHistory: [...state.myHistory],
-    allHistory: state.allHistory.map(h => [...h]),
+    agentWealth: [...state.agentWealth],
+    agentHistory: state.allHistory.map(history => [...history]),
     poolHistory: [...state.poolHistory],
     sustainableShare: state.sustainableShare,
   };
-
-  try {
-    // Create and execute the strategy function
-    const fn = new Function('state', `${code}\nreturn ${extractFunctionName(code)}(state);`);
-    const result = fn(strategyState);
-
-    if (typeof result !== 'number' || !Number.isFinite(result)) return 0;
-    if (result < 0) return 0;
-    return Math.min(result, state.maxExtraction);
-  } catch {
-    return 0;
-  }
 }
 
-// Extract function name from strategy code
-function extractFunctionName(code: string): string {
-  const match = code.match(/function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(/);
-  return match ? match[1] : 'strategy';
+async function evaluateStrategiesAcrossBattery(
+  strategies: Strategy[],
+  battery: CanonicalState[],
+): Promise<number[][]> {
+  if (battery.length === 0) return [];
+
+  const dispatcher = new RoundDispatcher();
+
+  try {
+    const strategyCodes = strategies.map(strategy => strategy.code);
+    const evaluations: number[][] = [];
+
+    for (const state of battery) {
+      const result = await dispatcher.executeRound(strategyCodes, buildDispatchState(state));
+      if (result.timedOut || result.childCrashed) {
+        throw new Error(`Sandbox evaluation failed for canonical state "${state.label}"`);
+      }
+
+      evaluations.push(
+        result.extractions.map(raw => normalizeExtraction(raw, state.maxExtraction).value),
+      );
+    }
+
+    return evaluations;
+  } finally {
+    dispatcher.kill();
+  }
 }
 
 // --- 9. Strategy Drift ---
 
-export function computeStrategyDrift(
+export async function computeStrategyDrift(
   oldStrategies: Strategy[],
   newStrategies: Strategy[],
   battery: CanonicalState[],
-): StrategyDriftResult {
+): Promise<StrategyDriftResult> {
+  if (oldStrategies.length !== newStrategies.length) {
+    throw new Error('Cannot compute strategy drift for mismatched strategy counts');
+  }
+
+  if (battery.length === 0 || oldStrategies.length === 0) {
+    return { perAgent: [], average: 0 };
+  }
+
+  const [oldEvaluations, newEvaluations] = await Promise.all([
+    evaluateStrategiesAcrossBattery(oldStrategies, battery),
+    evaluateStrategiesAcrossBattery(newStrategies, battery),
+  ]);
   const perAgent: number[] = [];
 
   for (let i = 0; i < oldStrategies.length; i++) {
     let totalDiff = 0;
-    let stateCount = 0;
 
-    for (const state of battery) {
-      const oldExtraction = executeStrategyAgainstState(oldStrategies[i].code, state, i);
-      const newExtraction = executeStrategyAgainstState(newStrategies[i].code, state, i);
-      const maxExtractable = Math.max(1, state.maxExtraction);
+    for (let stateIndex = 0; stateIndex < battery.length; stateIndex++) {
+      const oldExtraction = oldEvaluations[stateIndex][i] ?? 0;
+      const newExtraction = newEvaluations[stateIndex][i] ?? 0;
+      const maxExtractable = Math.max(1, battery[stateIndex].maxExtraction);
       totalDiff += Math.abs(newExtraction - oldExtraction) / maxExtractable;
-      stateCount++;
     }
 
-    perAgent.push(stateCount > 0 ? Math.round((totalDiff / stateCount) * 10000) / 10000 : 0);
+    perAgent.push(Math.round((totalDiff / battery.length) * 10000) / 10000);
   }
 
   const average = perAgent.length > 0
@@ -394,24 +409,16 @@ export function computeStrategyDrift(
 
 // --- 10. Behavioral Convergence ---
 
-export function computeBehavioralConvergence(
+export async function computeBehavioralConvergence(
   strategies: Strategy[],
   battery: CanonicalState[],
-): BehavioralConvergenceResult {
+): Promise<BehavioralConvergenceResult> {
   const agentCount = strategies.length;
   if (agentCount < 2 || battery.length === 0) {
     return { score: 0 };
   }
 
-  // For each state, get all agents' extractions
-  const extractionsPerState: number[][] = [];
-  for (const state of battery) {
-    const extractions: number[] = [];
-    for (let i = 0; i < agentCount; i++) {
-      extractions.push(executeStrategyAgainstState(strategies[i].code, state, i));
-    }
-    extractionsPerState.push(extractions);
-  }
+  const extractionsPerState = await evaluateStrategiesAcrossBattery(strategies, battery);
 
   // Compute pairwise behavioral distance
   let totalPairwiseDistance = 0;
@@ -479,11 +486,12 @@ export function detectAdaptationTheater(runs: RunResult[]): AdaptationTheaterRes
     if (!drift) continue;
 
     const priorLog = runs[i - 1].log;
-    const priorMetrics = runs[i - 1].metrics;
     const priorCollapsed = priorLog.finalState.collapsed;
 
-    // "Heavily rationed" = over-extraction rate > 0.3
-    const priorHeavilyRationed = priorMetrics.overExtractionRate.overExtractionRate > 0.3;
+    const priorHeavilyRationed = priorLog.rounds.length > 0
+      && priorLog.rounds.filter(round =>
+        round.requested.reduce((sum, amount) => sum + amount, 0) > round.poolBefore
+      ).length / priorLog.rounds.length > 0.3;
 
     let verdict: 'theater' | 'equilibrium' | 'normal';
     if (drift.average < 0.1 && (priorCollapsed || priorHeavilyRationed)) {

@@ -61,6 +61,10 @@ function makeRound(overrides: Partial<RoundResult> = {}): RoundResult {
 // --- Gini ---
 
 describe('computeGini', () => {
+  it('returns 0 for empty wealth vector', () => {
+    expect(computeGini([]).gini).toBe(0);
+  });
+
   it('returns 0 for equal wealth', () => {
     expect(computeGini([100, 100, 100]).gini).toBe(0);
   });

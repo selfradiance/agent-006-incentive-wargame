@@ -18,11 +18,14 @@ export interface RoundDispatchResult {
   childCrashed: boolean;
 }
 
-function isErrorExtraction(value: unknown): value is { error: string; agentIndex: number } {
+function isErrorExtraction(
+  value: unknown,
+  expectedAgentIndex: number,
+): value is { error: string; agentIndex: number } {
   return !!value
     && typeof value === 'object'
     && typeof (value as { error?: unknown }).error === 'string'
-    && Number.isInteger((value as { agentIndex?: unknown }).agentIndex);
+    && (value as { agentIndex?: unknown }).agentIndex === expectedAgentIndex;
 }
 
 function isValidRoundResultMessage(
@@ -36,8 +39,8 @@ function isValidRoundResultMessage(
     && (msg as Record<string, unknown>).requestId === requestId
     && Array.isArray((msg as Record<string, unknown>).extractions)
     && (msg as { extractions: unknown[] }).extractions.length === expectedLength
-    && (msg as { extractions: unknown[] }).extractions.every(value =>
-      typeof value === 'number' || isErrorExtraction(value)
+    && (msg as { extractions: unknown[] }).extractions.every((value, index) =>
+      (typeof value === 'number' && Number.isFinite(value)) || isErrorExtraction(value, index)
     );
 }
 

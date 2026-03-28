@@ -161,8 +161,7 @@ export interface CanonicalState {
   regenerationRate: number;
   maxExtraction: number;
   agentCount: number;
-  myWealth: number;
-  myHistory: number[];
+  agentWealth: number[];        // Per-agent wealth before this round
   allHistory: number[][];
   poolHistory: number[];
   sustainableShare: number;

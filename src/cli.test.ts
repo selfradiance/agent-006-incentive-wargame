@@ -26,4 +26,9 @@ describe('parseAndValidateArgs', () => {
     expect(() => parseAndValidateArgs(['--rounds', '0']))
       .toThrow(/Invalid --rounds value/);
   });
+
+  it('treats --runs= form as explicitly set in fixtures mode', () => {
+    expect(() => parseAndValidateArgs(['--fixtures', '--runs=2']))
+      .toThrow(/mutually exclusive/);
+  });
 });

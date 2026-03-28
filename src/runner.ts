@@ -19,7 +19,7 @@ import {
   createEconomyState,
   processRound,
 } from './economy.js';
-import { RoundDispatcher, normalizeExtraction } from './sandbox/executor.js';
+import { RoundDispatcher, normalizeExtraction, validateStrategy } from './sandbox/executor.js';
 import { computeAllMetrics } from './metrics.js';
 import {
   buildCanonicalStateBattery,
@@ -41,8 +41,62 @@ export interface RunnerOptions {
   onRound?: (result: RoundResult) => void;
 }
 
+function buildAbortedCampaign(runs: RunResult[], reason: string): CampaignResult {
+  return {
+    runs,
+    resilienceTrend: computeResilienceTrend(runs),
+    adaptationTheater: detectAdaptationTheater(runs),
+    archetypeCollapse: detectArchetypeCollapse(runs),
+    aborted: true,
+    abortReason: reason,
+  };
+}
+
+function validateExecutionInputs(
+  config: GameConfig,
+  archetypes: Archetype[],
+  strategies: Strategy[],
+): void {
+  if (!Number.isInteger(config.rounds) || config.rounds < 1) {
+    throw new Error(`Invalid config.rounds: ${config.rounds}`);
+  }
+  if (!Number.isInteger(config.agentCount) || config.agentCount < 1) {
+    throw new Error(`Invalid config.agentCount: ${config.agentCount}`);
+  }
+  if (!Number.isFinite(config.poolSize) || config.poolSize <= 0) {
+    throw new Error(`Invalid config.poolSize: ${config.poolSize}`);
+  }
+  if (!Number.isFinite(config.regenerationRate) || config.regenerationRate < 0 || config.regenerationRate > 1) {
+    throw new Error(`Invalid config.regenerationRate: ${config.regenerationRate}`);
+  }
+  if (!Number.isFinite(config.maxExtractionRate) || config.maxExtractionRate < 0 || config.maxExtractionRate > 1) {
+    throw new Error(`Invalid config.maxExtractionRate: ${config.maxExtractionRate}`);
+  }
+  if (archetypes.length !== config.agentCount) {
+    throw new Error(`Archetype count ${archetypes.length} does not match config.agentCount ${config.agentCount}`);
+  }
+  if (strategies.length !== config.agentCount) {
+    throw new Error(`Strategy count ${strategies.length} does not match config.agentCount ${config.agentCount}`);
+  }
+
+  for (let i = 0; i < strategies.length; i++) {
+    const strategy = strategies[i];
+    if (typeof strategy.code !== 'string') {
+      throw new Error(`Strategy ${i} is missing source code`);
+    }
+
+    const validation = validateStrategy(strategy.code);
+    if (!validation.valid) {
+      throw new Error(
+        `Strategy ${i} (${strategy.archetypeName}) failed validation: ${validation.errors.join('; ')}`
+      );
+    }
+  }
+}
+
 export async function runSimulation(opts: RunnerOptions): Promise<SimulationLog> {
   const { config, archetypes, strategies } = opts;
+  validateExecutionInputs(config, archetypes, strategies);
   const economyState = createEconomyState(config);
   const rounds: RoundResult[] = [];
   const strategyCodes = strategies.map(s => s.code);
@@ -148,6 +202,10 @@ export interface CampaignOptions {
 
 export async function runCampaign(opts: CampaignOptions): Promise<CampaignResult> {
   const { config, archetypes, totalRuns, adaptFn } = opts;
+  if (!Number.isInteger(totalRuns) || totalRuns < 1) {
+    throw new Error(`Invalid totalRuns: ${totalRuns}`);
+  }
+  validateExecutionInputs(config, archetypes, opts.initialStrategies);
 
   let strategies = opts.initialStrategies;
   const allRunResults: RunResult[] = [];
@@ -162,32 +220,58 @@ export async function runCampaign(opts: CampaignOptions): Promise<CampaignResult
 
       opts.onAdaptStart?.(run);
 
-      const adaptResult = await adaptFn(
-        archetypes,
-        strategies,
-        priorResult.log,
-        priorResult.metrics,
-        run - 1,  // runNumber = which run just completed
-        config,
-      );
+      let adaptResult: AdaptAllResult;
+      try {
+        adaptResult = await adaptFn(
+          archetypes,
+          strategies,
+          priorResult.log,
+          priorResult.metrics,
+          run - 1,  // runNumber = which run just completed
+          config,
+        );
+      } catch (err) {
+        return buildAbortedCampaign(
+          allRunResults,
+          `Campaign aborted: adaptation failed before run ${run} — ${(err as Error).message}`,
+        );
+      }
 
       opts.onAdaptEnd?.(run, adaptResult);
 
       // Abort if >= 2 failures
       if (adaptResult.failureCount >= 2) {
-        return {
-          runs: allRunResults,
-          resilienceTrend: computeResilienceTrend(allRunResults),
-          adaptationTheater: detectAdaptationTheater(allRunResults),
-          archetypeCollapse: detectArchetypeCollapse(allRunResults),
-          aborted: true,
-          abortReason: `Campaign aborted: ${adaptResult.failureCount} agents failed adaptation in run ${run} (threshold: 2).`,
-        };
+        return buildAbortedCampaign(
+          allRunResults,
+          `Campaign aborted: ${adaptResult.failureCount} agents failed adaptation in run ${run} (threshold: 2).`,
+        );
       }
 
       priorStrategies = strategies;
       strategies = adaptResult.strategies;
       currentAdaptationResults = adaptResult.results;
+      validateExecutionInputs(config, archetypes, strategies);
+    }
+
+    // Compute campaign metrics
+    const augmentedBattery: CanonicalState[] = [...canonicalStates];
+    if (run > 1) {
+      const priorLog = allRunResults[run - 2].log;
+      augmentedBattery.push(...extractRunSnapshots(priorLog));
+    }
+
+    let drift: RunResult['drift'];
+    let convergence: RunResult['convergence'];
+    try {
+      drift = (run > 1 && priorStrategies)
+        ? await computeStrategyDrift(priorStrategies, strategies, augmentedBattery)
+        : undefined;
+      convergence = await computeBehavioralConvergence(strategies, augmentedBattery);
+    } catch (err) {
+      return buildAbortedCampaign(
+        allRunResults,
+        `Campaign aborted: failed to evaluate behavioral metrics before run ${run} — ${(err as Error).message}`,
+      );
     }
 
     // Run simulation
@@ -204,19 +288,6 @@ export async function runCampaign(opts: CampaignOptions): Promise<CampaignResult
 
     opts.onRunEnd?.(run, log, metrics);
 
-    // Compute campaign metrics
-    const augmentedBattery: CanonicalState[] = [...canonicalStates];
-    if (run > 1) {
-      const priorLog = allRunResults[run - 2].log;
-      augmentedBattery.push(...extractRunSnapshots(priorLog));
-    }
-
-    const drift = (run > 1 && priorStrategies)
-      ? computeStrategyDrift(priorStrategies, strategies, augmentedBattery)
-      : undefined;
-
-    const convergence = computeBehavioralConvergence(strategies, augmentedBattery);
-
     const runResult: RunResult = {
       runNumber: run,
       log,
@@ -228,6 +299,13 @@ export async function runCampaign(opts: CampaignOptions): Promise<CampaignResult
     };
 
     allRunResults.push(runResult);
+
+    if (!metrics.poolSurvival.completed) {
+      return buildAbortedCampaign(
+        allRunResults,
+        `Campaign aborted: run ${run} ended early after ${log.rounds.length}/${config.rounds} rounds.`,
+      );
+    }
   }
 
   return {

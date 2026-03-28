@@ -93,4 +93,13 @@ describe('validateStrategy', () => {
     expect(result.valid).toBe(false);
     expect(result.errors.some(e => e.includes('constructor bracket access'))).toBe(true);
   });
+
+  it('rejects string-concatenated property gadgets', () => {
+    const code = `function t(state) {
+  return []['filter']['constr' + 'uctor']('return 1')();
+}`;
+    const result = validateStrategy(code);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('string-concatenated property access'))).toBe(true);
+  });
 });

@@ -75,7 +75,7 @@ export function parseAndValidateArgs(args: string[] = process.argv.slice(2)): CL
 
   // When --fixtures is specified without explicit --runs, default to 1 run
   const runsRaw = Number(values.runs);
-  const runsExplicitlySet = args.includes('--runs');
+  const runsExplicitlySet = args.some(arg => arg === '--runs' || arg.startsWith('--runs='));
   const runs = (fixtures && !runsExplicitlySet) ? 1 : runsRaw;
 
   if (!Number.isInteger(runs) || runs < 1 || runs > MAX_RUNS) {
@@ -165,8 +165,20 @@ function printIncompleteSummaryBox(completedRounds: number, totalRounds: number,
   console.log('└──────────────────────────────────────────────────────┘');
 }
 
-function printCampaignRunSummary(runNumber: number, totalRuns: number, survived: boolean, collapseRound: number | null): void {
-  const status = survived ? 'SURVIVED' : `COLLAPSED (round ${collapseRound})`;
+function printCampaignRunSummary(
+  runNumber: number,
+  totalRuns: number,
+  survived: boolean,
+  completed: boolean,
+  collapseRound: number | null,
+  completedRounds: number,
+  totalConfiguredRounds: number,
+): void {
+  const status = !completed
+    ? `INCOMPLETE (${completedRounds}/${totalConfiguredRounds} rounds)`
+    : survived
+      ? 'SURVIVED'
+      : `COLLAPSED (round ${collapseRound})`;
   console.log(`  ── Run ${runNumber}/${totalRuns}: ${status} ──`);
 }
 
@@ -254,8 +266,15 @@ async function main(): Promise<void> {
         printRoundProgress(result.round, config.rounds, result.poolAfter, result.collapsed, config.poolSize);
       },
       onRunEnd: (runNumber, log, metrics) => {
-        const survived = metrics.poolSurvival.survived;
-        printCampaignRunSummary(runNumber, flags.runs, survived, metrics.poolSurvival.collapseRound);
+        printCampaignRunSummary(
+          runNumber,
+          flags.runs,
+          metrics.poolSurvival.survived,
+          metrics.poolSurvival.completed,
+          metrics.poolSurvival.collapseRound,
+          log.rounds.length,
+          config.rounds,
+        );
       },
       onAdaptStart: (runNumber) => {
         console.log(`\n  Adapting strategies for Run ${runNumber}...`);
@@ -279,10 +298,14 @@ async function main(): Promise<void> {
 
     // Print campaign summary box
     const anyCollapsed = campaignResult.runs.some(r => r.log.finalState.collapsed);
+    const anyIncomplete = campaignResult.runs.some(r => !r.metrics.poolSurvival.completed);
     console.log('');
     console.log('┌──────────────────────────────────────────────────────┐');
     console.log(`│  CAMPAIGN: ${campaignResult.runs.length} run(s) completed`.padEnd(55) + '│');
     console.log(`│  Resilience Trend: ${campaignResult.resilienceTrend.trend}`.padEnd(55) + '│');
+    if (anyIncomplete) {
+      console.log('│  Run Status: INCOMPLETE'.padEnd(55) + '│');
+    }
     if (campaignResult.adaptationTheater.detected) {
       console.log('│  Adaptation Theater: DETECTED'.padEnd(55) + '│');
     }
@@ -319,8 +342,8 @@ async function main(): Promise<void> {
 
     console.log('');
 
-    // Exit codes: 0 = all survived, 1 = any collapsed or aborted
-    if (anyCollapsed || campaignResult.aborted) {
+    // Exit codes: 0 = all survived, 1 = any collapsed, incomplete, or aborted
+    if (anyCollapsed || anyIncomplete || campaignResult.aborted) {
       process.exit(1);
     }
     process.exit(0);

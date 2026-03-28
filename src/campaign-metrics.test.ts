@@ -12,12 +12,9 @@ import {
   detectArchetypeCollapse,
 } from './metrics.js';
 import type {
-  GameConfig,
   Strategy,
   SimulationLog,
-  Archetype,
   RunResult,
-  CanonicalState,
 } from './types.js';
 import { DEFAULT_CONFIG } from './types.js';
 
@@ -34,6 +31,10 @@ function makeStrategies(codes: string[]): Strategy[] {
     code,
     isFallback: false,
   }));
+}
+
+function makeConfig(agentCount: number) {
+  return { ...DEFAULT_CONFIG, agentCount };
 }
 
 function makeMinimalRunResult(overrides: Partial<RunResult> = {}): RunResult {
@@ -178,80 +179,104 @@ describe('extractRunSnapshots', () => {
     expect(collapseSnapshot).toBeDefined();
     expect(collapseSnapshot!.isRunSpecific).toBe(true);
   });
+
+  it('preserves per-agent wealth in run-specific snapshots', () => {
+    const log: SimulationLog = {
+      config: { ...DEFAULT_CONFIG, agentCount: 2, rounds: 2 },
+      archetypes: [],
+      strategies: [],
+      rounds: [
+        { round: 1, poolBefore: 1000, poolAfter: 985, requested: [5, 10], actual: [5, 10], agentWealth: [5, 10], collapsed: false },
+        { round: 2, poolBefore: 985, poolAfter: 935, requested: [10, 40], actual: [10, 40], agentWealth: [15, 50], collapsed: false },
+      ],
+      finalState: {
+        pool: 935,
+        round: 2,
+        agentWealth: [15, 50],
+        agentHistory: [[5, 10], [10, 40]],
+        poolHistory: [1000, 985],
+        collapsed: false,
+        collapseRound: null,
+      },
+    };
+
+    const [snapshot] = extractRunSnapshots(log);
+    expect(snapshot.agentWealth).toEqual([5, 10]);
+  });
 });
 
 // --- Strategy Drift ---
 
 describe('computeStrategyDrift', () => {
-  it('returns 0 drift for identical strategies', () => {
+  it('returns 0 drift for identical strategies', async () => {
     const code = 'function s(state) { return state.sustainableShare; }';
     const strategies = [makeStrategy('A', code)];
-    const battery = buildCanonicalStateBattery(DEFAULT_CONFIG);
+    const battery = buildCanonicalStateBattery(makeConfig(1));
 
-    const drift = computeStrategyDrift(strategies, strategies, battery);
+    const drift = await computeStrategyDrift(strategies, strategies, battery);
     expect(drift.average).toBe(0);
     expect(drift.perAgent[0]).toBe(0);
-  });
+  }, 10000);
 
-  it('returns positive drift for different strategies', () => {
+  it('returns positive drift for different strategies', async () => {
     const oldCode = 'function s(state) { return 0; }';
     const newCode = 'function s(state) { return state.maxExtraction; }';
-    const battery = buildCanonicalStateBattery(DEFAULT_CONFIG);
+    const battery = buildCanonicalStateBattery(makeConfig(1));
 
-    const drift = computeStrategyDrift(
+    const drift = await computeStrategyDrift(
       [makeStrategy('A', oldCode)],
       [makeStrategy('A', newCode)],
       battery,
     );
     expect(drift.average).toBeGreaterThan(0);
     expect(drift.perAgent[0]).toBeGreaterThan(0);
-  });
+  }, 10000);
 
-  it('drift is bounded 0-1', () => {
+  it('drift is bounded 0-1', async () => {
     const oldCode = 'function s(state) { return 0; }';
     const newCode = 'function s(state) { return state.maxExtraction; }';
-    const battery = buildCanonicalStateBattery(DEFAULT_CONFIG);
+    const battery = buildCanonicalStateBattery(makeConfig(1));
 
-    const drift = computeStrategyDrift(
+    const drift = await computeStrategyDrift(
       [makeStrategy('A', oldCode)],
       [makeStrategy('A', newCode)],
       battery,
     );
     expect(drift.perAgent[0]).toBeGreaterThanOrEqual(0);
     expect(drift.perAgent[0]).toBeLessThanOrEqual(1);
-  });
+  }, 10000);
 });
 
 // --- Behavioral Convergence ---
 
 describe('computeBehavioralConvergence', () => {
-  it('returns 1.0 for identical strategies', () => {
+  it('returns 1.0 for identical strategies', async () => {
     const code = 'function s(state) { return state.sustainableShare; }';
     const strategies = makeStrategies([code, code, code]);
-    const battery = buildCanonicalStateBattery(DEFAULT_CONFIG);
+    const battery = buildCanonicalStateBattery(makeConfig(3));
 
-    const result = computeBehavioralConvergence(strategies, battery);
+    const result = await computeBehavioralConvergence(strategies, battery);
     expect(result.score).toBe(1);
-  });
+  }, 10000);
 
-  it('returns < 1 for diverse strategies', () => {
+  it('returns < 1 for diverse strategies', async () => {
     const strategies = makeStrategies([
       'function s(state) { return 0; }',
       'function s(state) { return state.maxExtraction; }',
       'function s(state) { return state.sustainableShare; }',
     ]);
-    const battery = buildCanonicalStateBattery(DEFAULT_CONFIG);
+    const battery = buildCanonicalStateBattery(makeConfig(3));
 
-    const result = computeBehavioralConvergence(strategies, battery);
+    const result = await computeBehavioralConvergence(strategies, battery);
     expect(result.score).toBeLessThan(1);
     expect(result.score).toBeGreaterThanOrEqual(0);
-  });
+  }, 10000);
 
-  it('returns 0 for less than 2 agents', () => {
+  it('returns 0 for less than 2 agents', async () => {
     const strategies = [makeStrategy('A', 'function s(state) { return 0; }')];
-    const battery = buildCanonicalStateBattery(DEFAULT_CONFIG);
+    const battery = buildCanonicalStateBattery(makeConfig(1));
 
-    const result = computeBehavioralConvergence(strategies, battery);
+    const result = await computeBehavioralConvergence(strategies, battery);
     expect(result.score).toBe(0);
   });
 });
@@ -361,6 +386,35 @@ describe('detectAdaptationTheater', () => {
     const result = detectAdaptationTheater(runs);
     expect(result.detected).toBe(false);
     expect(result.runTransitions[0].verdict).toBe('normal');
+  });
+
+  it('detects theater when low drift follows heavy rationing', () => {
+    const runs = [
+      makeMinimalRunResult({
+        runNumber: 1,
+        log: {
+          ...makeMinimalRunResult().log,
+          rounds: Array.from({ length: 4 }, (_, index) => ({
+            round: index + 1,
+            poolBefore: 100,
+            poolAfter: 50,
+            requested: [60, 60, 60, 60, 60, 60, 60],
+            actual: [10, 10, 10, 10, 10, 10, 10],
+            agentWealth: [10, 10, 10, 10, 10, 10, 10],
+            collapsed: false,
+          })),
+        },
+      }),
+      makeMinimalRunResult({
+        runNumber: 2,
+        drift: { perAgent: [0.04, 0.04, 0.04], average: 0.04 },
+      }),
+    ];
+
+    const result = detectAdaptationTheater(runs);
+    expect(result.detected).toBe(true);
+    expect(result.runTransitions[0].priorHeavilyRationed).toBe(true);
+    expect(result.runTransitions[0].verdict).toBe('theater');
   });
 });
 

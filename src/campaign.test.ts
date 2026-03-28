@@ -175,6 +175,22 @@ describe('runCampaign — fixture-adaptation integration', () => {
     expect(result.abortReason).toContain('7 agents failed');
     expect(result.runs).toHaveLength(1); // Only Run 1 completed
   }, 30000);
+
+  it('aborts campaign when the adaptation function throws', async () => {
+    const result = await runCampaign({
+      config: quickConfig,
+      archetypes: ARCHETYPES,
+      initialStrategies: fixtureStrategies(),
+      totalRuns: 2,
+      adaptFn: async () => {
+        throw new Error('adapter offline');
+      },
+    });
+
+    expect(result.aborted).toBe(true);
+    expect(result.abortReason).toContain('adapter offline');
+    expect(result.runs).toHaveLength(1);
+  }, 30000);
 });
 
 // --- Fixture Adaptation ---

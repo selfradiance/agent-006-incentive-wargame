@@ -71,6 +71,7 @@ const RAW_BLOCKED_PATTERNS: [RegExp, string][] = [
   [/\[['"]constructor['"]\]/, 'constructor bracket access not allowed'],
   [/\[['"]__proto__['"]\]/, '__proto__ bracket access not allowed'],
   [/\[['"]prototype['"]\]/, 'prototype bracket access not allowed'],
+  [/\[[^\]]*['"][^'"\]]*['"]\s*\+\s*['"][^'"\]]*['"][^\]]*\]/, 'string-concatenated property access not allowed'],
 ];
 
 export function validateStrategy(code: string): ValidationResult {
