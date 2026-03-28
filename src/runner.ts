@@ -1,6 +1,7 @@
-// Agent 006: Simulation Runner + Campaign Loop (v0.2.0)
+// Agent 006: Simulation Runner + Campaign Loop (v0.2.0 + v0.3.0)
 // Single run: round loop with sandbox execution.
 // Campaign: multiple runs with adapter-driven strategy adaptation between runs.
+// v0.3.0: Scenario-aware runner using generated economy modules in sandbox.
 
 import type {
   GameConfig,
@@ -12,6 +13,9 @@ import type {
   CampaignResult,
   RunResult,
   CanonicalState,
+  NormalizedScenario,
+  AgentDecision,
+  HardInvariantViolation,
 } from './types.js';
 import {
   computeMaxExtraction,
@@ -315,4 +319,215 @@ export async function runCampaign(opts: CampaignOptions): Promise<CampaignResult
     archetypeCollapse: detectArchetypeCollapse(allRunResults),
     aborted: false,
   };
+}
+
+// --- v0.3.0: Scenario-Aware Runner ---
+
+export interface ScenarioRunnerOptions {
+  scenario: NormalizedScenario;
+  economyCode: string;
+  archetypes: Archetype[];
+  strategies: Strategy[];
+  rounds: number;
+  onRound?: (round: number, state: Record<string, unknown>, metrics: Record<string, number>) => void;
+}
+
+export interface ScenarioRunResult {
+  rounds: number;
+  finalState: Record<string, unknown>;
+  metricsPerRound: Record<string, number>[];
+  softViolations: string[];
+  hardViolations: HardInvariantViolation[];
+  collapsed: boolean;
+  collapseRound: number | null;
+  invalidDecisions: { round: number; agentIndex: number; errors: string[] }[];
+}
+
+function checkHardInvariants(
+  state: Record<string, unknown>,
+  round: number,
+  agentCount: number,
+): HardInvariantViolation[] {
+  const violations: HardInvariantViolation[] = [];
+
+  // Check for NaN in state values
+  const stateStr = JSON.stringify(state);
+  if (stateStr.includes('null') || stateStr.includes('NaN')) {
+    // Deep check for actual NaN/undefined values
+    const checkValue = (val: unknown, path: string) => {
+      if (val === null || val === undefined) return;
+      if (typeof val === 'number' && !Number.isFinite(val)) {
+        violations.push({ round, type: 'nan-detected', details: `${path} = ${val}` });
+      }
+      if (typeof val === 'object' && val !== null) {
+        for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+          checkValue(v, `${path}.${k}`);
+        }
+      }
+    };
+    checkValue(state, 'state');
+  }
+
+  // Check agent arrays have correct length
+  for (const [key, val] of Object.entries(state)) {
+    if (Array.isArray(val) && key.toLowerCase().includes('agent') && val.length !== agentCount) {
+      violations.push({
+        round,
+        type: 'wrong-agent-count',
+        details: `state.${key} has ${val.length} elements, expected ${agentCount}`,
+      });
+    }
+  }
+
+  return violations;
+}
+
+export async function runScenarioSimulation(opts: ScenarioRunnerOptions): Promise<ScenarioRunResult> {
+  const { scenario, economyCode, archetypes, strategies, rounds } = opts;
+
+  const dispatcher = new RoundDispatcher();
+  await dispatcher.spawn();
+
+  try {
+    // Load economy module
+    const loadResult = await dispatcher.loadEconomy(economyCode);
+    if (!loadResult.success) {
+      throw new Error(`Failed to load economy module: ${loadResult.error}`);
+    }
+
+    // Initialize state
+    const initResult = await dispatcher.callEconomyFunction('initState', [scenario]);
+    if (!initResult.success) {
+      throw new Error(`Failed to initialize economy state: ${initResult.error}`);
+    }
+
+    let state = initResult.result as Record<string, unknown>;
+    const metricsPerRound: Record<string, number>[] = [];
+    const softViolations: string[] = [];
+    const hardViolations: HardInvariantViolation[] = [];
+    const invalidDecisions: ScenarioRunResult['invalidDecisions'] = [];
+    let collapsed = false;
+    let collapseRound: number | null = null;
+
+    const strategyCodes = strategies.map(s => s.code);
+
+    for (let r = 1; r <= rounds; r++) {
+      if (collapsed) break;
+
+      // Get observations for all agents
+      const observations: Record<string, unknown>[] = [];
+      for (let i = 0; i < scenario.agentCount; i++) {
+        const obsResult = await dispatcher.callEconomyFunction('getObservations', [state, i, scenario]);
+        if (obsResult.success) {
+          const obs = obsResult.result as Record<string, unknown>;
+          // Inject round/totalRounds for strategy context
+          obs._round = r;
+          obs._totalRounds = rounds;
+          observations.push(obs);
+        } else {
+          observations.push({ _round: r, _totalRounds: rounds, agentIndex: i });
+        }
+      }
+
+      // Execute strategies in sandbox
+      const stratResult = await dispatcher.executeScenarioStrategies(
+        strategyCodes,
+        observations,
+        scenario as unknown as Record<string, unknown>,
+      );
+
+      // Validate decisions against schema
+      const { validateDecision } = await import('./sandbox/validator.js');
+      const validatedDecisions: AgentDecision[] = [];
+
+      for (let i = 0; i < scenario.agentCount; i++) {
+        const raw = stratResult.decisions[i];
+
+        if (raw && 'error' in raw) {
+          // Strategy error — treat as no-op
+          invalidDecisions.push({ round: r, agentIndex: i, errors: [raw.error as string] });
+          // Use first action with zero/minimal params as no-op
+          const noOp = makeNoOpDecision(scenario);
+          validatedDecisions.push(noOp);
+          continue;
+        }
+
+        const validation = validateDecision(raw, scenario, i);
+        if (!validation.valid) {
+          invalidDecisions.push({ round: r, agentIndex: i, errors: validation.errors });
+          const noOp = makeNoOpDecision(scenario);
+          validatedDecisions.push(noOp);
+        } else {
+          validatedDecisions.push(raw as unknown as AgentDecision);
+        }
+      }
+
+      // Tick economy
+      const tickResult = await dispatcher.callEconomyFunction('tick', [state, validatedDecisions, scenario]);
+      if (!tickResult.success) {
+        hardViolations.push({
+          round: r,
+          type: 'missing-field',
+          details: `tick() failed: ${tickResult.error}`,
+        });
+        break;
+      }
+
+      state = tickResult.result as Record<string, unknown>;
+
+      // Hard invariant checks (parent-side)
+      const hardResults = checkHardInvariants(state, r, scenario.agentCount);
+      if (hardResults.length > 0) {
+        hardViolations.push(...hardResults);
+        break; // Hard invariant failure aborts
+      }
+
+      // Soft invariant checks (economy-side)
+      const softResult = await dispatcher.callEconomyFunction('checkInvariants', [state, scenario]);
+      if (softResult.success && Array.isArray(softResult.result)) {
+        for (const v of softResult.result as string[]) {
+          softViolations.push(`[Round ${r}] ${v}`);
+        }
+      }
+
+      // Extract metrics
+      const metricsResult = await dispatcher.callEconomyFunction('extractMetrics', [state, scenario]);
+      if (metricsResult.success) {
+        metricsPerRound.push(metricsResult.result as Record<string, number>);
+      }
+
+      // Check collapse
+      const collapseResult = await dispatcher.callEconomyFunction('isCollapsed', [state, scenario]);
+      if (collapseResult.success && collapseResult.result === true) {
+        collapsed = true;
+        collapseRound = r;
+      }
+
+      opts.onRound?.(r, state, metricsPerRound[metricsPerRound.length - 1] ?? {});
+    }
+
+    return {
+      rounds: metricsPerRound.length,
+      finalState: state,
+      metricsPerRound,
+      softViolations,
+      hardViolations,
+      collapsed,
+      collapseRound,
+      invalidDecisions,
+    };
+  } finally {
+    dispatcher.kill();
+  }
+}
+
+function makeNoOpDecision(scenario: NormalizedScenario): AgentDecision {
+  const firstAction = scenario.actions[0];
+  const params: Record<string, number | string | boolean> = {};
+  for (const p of firstAction.params) {
+    if (p.type === 'number') params[p.name] = p.min ?? 0;
+    else if (p.type === 'boolean') params[p.name] = false;
+    else params[p.name] = '';
+  }
+  return { action: firstAction.name, params };
 }
