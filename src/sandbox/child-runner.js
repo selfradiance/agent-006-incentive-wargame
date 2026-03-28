@@ -184,7 +184,12 @@ function loadEconomyModule(code) {
   economyFunctions = ctx.exports;
 }
 
+const ALLOWED_ECONOMY_FUNCTIONS = new Set(['initState', 'tick', 'extractMetrics', 'checkInvariants', 'isCollapsed', 'getObservations']);
+
 function callEconomyFunction(fnName, args) {
+  if (!ALLOWED_ECONOMY_FUNCTIONS.has(fnName)) {
+    throw new Error(`Economy function ${fnName} is not an allowed export`);
+  }
   if (!economyFunctions || !economyFunctions[fnName]) {
     throw new Error(`Economy function ${fnName} not loaded`);
   }
@@ -249,6 +254,9 @@ safeProcess.on('message', (msg) => {
   // v0.3.0: Load economy module
   if (isPlainObject(msg) && msg.type === 'load_economy' && Number.isInteger(msg.requestId)) {
     try {
+      if (typeof msg.code !== 'string' || msg.code.length === 0) {
+        throw new Error('Economy module code must be a non-empty string');
+      }
       loadEconomyModule(msg.code);
       safeProcess.send?.({
         type: 'economy_loaded',
@@ -290,6 +298,15 @@ safeProcess.on('message', (msg) => {
   // v0.3.0: Execute scenario strategies (returns AgentDecision objects)
   if (isPlainObject(msg) && msg.type === 'execute_scenario_strategies' && Number.isInteger(msg.requestId)) {
     try {
+      if (!Array.isArray(msg.strategies) || !msg.strategies.every(s => typeof s === 'string')) {
+        throw new Error('strategies must be an array of strings');
+      }
+      if (!Array.isArray(msg.observations) || msg.observations.length !== msg.strategies.length) {
+        throw new Error('observations must be an array matching strategies length');
+      }
+      if (!isPlainObject(msg.scenario) || typeof msg.scenario.agentCount !== 'number') {
+        throw new Error('scenario must be a valid object with agentCount');
+      }
       const decisions = executeScenarioStrategies(msg.strategies, msg.observations, msg.scenario);
       safeProcess.send?.({
         type: 'scenario_strategies_result',
