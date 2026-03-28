@@ -1,6 +1,6 @@
 {
   "name": "agent-006-incentive-wargame",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Stress-test incentive designs with AI-generated adversarial strategies",
   "type": "module",
   "scripts": {
@@ -9,13 +9,13 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
-    "dotenv": "^16.4.7"
+    "@anthropic-ai/sdk": "0.39.0",
+    "dotenv": "16.6.1"
   },
   "devDependencies": {
-    "tsx": "^4.19.4",
-    "typescript": "^5.7.3",
-    "vitest": "^3.1.1"
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
   },
   "engines": {
     "node": ">=22.0.0"
