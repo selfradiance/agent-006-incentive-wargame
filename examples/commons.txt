@@ -1,0 +1,9 @@
+Tragedy of the Commons
+
+7 agents share a renewable resource pool starting at 1000 units. Each round, every agent simultaneously decides how much to extract from the pool (between 0 and 20% of the current pool level). If total extraction exceeds the pool, resources are distributed pro-rata based on each agent's requested amount.
+
+After extraction, the pool regenerates by 10% of whatever remains. The pool cannot exceed its starting value (carrying capacity of 1000).
+
+If the pool drops below 0.01, the commons has collapsed and the simulation ends early.
+
+Run for 50 rounds. Each agent can observe the current pool level, their own accumulated wealth, all agents' extraction history, and the sustainable share (MSY per agent).
