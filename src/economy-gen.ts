@@ -70,6 +70,7 @@ export function getObservations(state, agentIndex, scenario) {
 - \`getObservations()\` must return a plain JSON-serializable object root
 - If any action has \`allowedRoles\`, \`getObservations()\` must include a private \`_role\` string for each agent
 - Decisions that are invalid, missing, null, or malformed should be treated as no-ops
+- IMPORTANT: In tick(), process all agent decisions against their CURRENT roles/state BEFORE making any state transitions (role swaps, phase changes, etc.). State transitions happen at the END of tick(), after all decisions have been resolved. This prevents timing bugs where decisions are evaluated against a state the agent didn't see when making their choice.
 - Size limit: 20KB
 
 ## Scenario Definition
