@@ -449,7 +449,9 @@ export async function runScenarioSimulation(opts: ScenarioRunnerOptions): Promis
           continue;
         }
 
-        const validation = validateDecision(raw, scenario, i);
+        // Pass agent role from observations if available (economy module sets _role field)
+        const agentRole = typeof observations[i]?._role === 'string' ? observations[i]._role as string : undefined;
+        const validation = validateDecision(raw, scenario, i, agentRole);
         if (!validation.valid) {
           invalidDecisions.push({ round: r, agentIndex: i, errors: validation.errors });
           const noOp = makeNoOpDecision(scenario);
@@ -519,6 +521,9 @@ export async function runScenarioSimulation(opts: ScenarioRunnerOptions): Promis
 }
 
 function makeNoOpDecision(scenario: NormalizedScenario): AgentDecision {
+  if (scenario.actions.length === 0) {
+    return { action: 'noop', params: {} };
+  }
   const firstAction = scenario.actions[0];
   const params: Record<string, number | string | boolean> = {};
   for (const p of firstAction.params) {
