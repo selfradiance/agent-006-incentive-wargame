@@ -2,7 +2,8 @@
 // Claude API: simulation log + metrics → structured findings report.
 // Fallback to metrics-only on API failure.
 
-import type { SimulationLog, AllMetrics, CampaignResult } from './types.js';
+import type { SimulationLog, AllMetrics, CampaignResult, NormalizedScenario, Archetype } from './types.js';
+import type { ScenarioRunResult } from './runner.js';
 import { getAnthropicClient } from './anthropic-client.js';
 
 const MODEL = 'claude-sonnet-4-20250514';
@@ -340,6 +341,139 @@ export function formatCampaignMetricsOnly(campaign: CampaignResult): string {
   lines.push(`  Archetype Collapse: ${campaign.archetypeCollapse.detected ? 'DETECTED' : 'None'}`);
   lines.push('');
   lines.push('══════════════════════════════════════════════════════');
+
+  return lines.join('\n');
+}
+
+// ═══════════════════════════════════════════════════════════
+// v0.3.0: Scenario-Aware Report
+// ═══════════════════════════════════════════════════════════
+
+function buildScenarioReporterInput(
+  scenario: NormalizedScenario,
+  archetypes: Archetype[],
+  result: ScenarioRunResult,
+): string {
+  const lastMetrics = result.metricsPerRound[result.metricsPerRound.length - 1] ?? {};
+  const metricsList = Object.entries(lastMetrics)
+    .map(([k, v]) => `  ${k}: ${v}`)
+    .join('\n');
+
+  const softViolationSummary = result.softViolations.length > 0
+    ? `\n### Soft Invariant Violations (${result.softViolations.length} total)\n${result.softViolations.slice(0, 20).join('\n')}${result.softViolations.length > 20 ? `\n... and ${result.softViolations.length - 20} more` : ''}`
+    : '\nNo soft invariant violations.';
+
+  const hardViolationSummary = result.hardViolations.length > 0
+    ? `\n### Runtime Integrity Failures (${result.hardViolations.length})\n${result.hardViolations.map(v => `  [Round ${v.round}] ${v.type}: ${v.details}`).join('\n')}`
+    : '';
+
+  const invalidDecisionSummary = result.invalidDecisions.length > 0
+    ? `\n### Invalid Decisions (${result.invalidDecisions.length} total)\n${result.invalidDecisions.slice(0, 10).map(d => `  [Round ${d.round}] Agent ${d.agentIndex}: ${d.errors.join('; ')}`).join('\n')}`
+    : '\nNo invalid decisions.';
+
+  const softViolationPct = result.rounds > 0
+    ? (result.softViolations.length / result.rounds * 100).toFixed(1)
+    : '0';
+
+  const modelQualityFlag = result.softViolations.length > result.rounds * 0.5
+    ? '\n⚠️ CRITICAL MODEL QUALITY ISSUE: >50% of rounds have soft invariant violations. The generated economy may have design flaws.'
+    : '';
+
+  return `You are analyzing the results of a scenario-based economic simulation.
+
+## Scenario
+**Name:** ${scenario.name}
+**Description:** ${scenario.description}
+**Agents:** ${scenario.agentCount}
+
+## Archetypes
+${archetypes.map(a => `${a.index}. **${a.name}**: ${a.description}`).join('\n')}
+
+## Run Results
+- Rounds completed: ${result.rounds}
+- Collapsed: ${result.collapsed}${result.collapseRound ? ` (round ${result.collapseRound})` : ''}
+- Hard invariant violations: ${result.hardViolations.length}
+- Soft invariant violations: ${result.softViolations.length} (${softViolationPct}% of rounds)
+- Invalid decisions: ${result.invalidDecisions.length}
+
+## Final Metrics
+${metricsList || '  (no metrics available)'}
+${hardViolationSummary}
+${softViolationSummary}
+${invalidDecisionSummary}
+${modelQualityFlag}
+
+## Instructions
+Generate a structured report with these sections:
+
+1. **Executive Summary** — 2-3 sentences: overall outcome, scenario health
+2. **Per-Agent Breakdown** — one paragraph per archetype: how did each agent perform?
+3. **Findings** — key observations about the scenario dynamics
+   - Report hard invariant failures as "Runtime Integrity Failure"
+   - Report soft invariant violations as "Model Defect" findings
+   ${result.softViolations.length > result.rounds * 0.5 ? '- Flag the >50% soft violation rate as a CRITICAL model quality issue' : ''}
+4. **Recommendations** — suggestions for the scenario designer
+
+Be empirical. Report what happened, do not invent data.`;
+}
+
+export async function generateScenarioReport(
+  scenario: NormalizedScenario,
+  archetypes: Archetype[],
+  result: ScenarioRunResult,
+): Promise<ReportResult> {
+  try {
+    const client = getAnthropicClient();
+    const prompt = buildScenarioReporterInput(scenario, archetypes, result);
+
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const report = response.content
+      .filter(block => block.type === 'text')
+      .map(block => block.text)
+      .join('')
+      .trim();
+
+    if (!report) {
+      throw new Error('Claude returned an empty scenario report');
+    }
+
+    return { report, metricsOnly: false };
+  } catch (err) {
+    return {
+      report: null,
+      metricsOnly: true,
+      error: `Scenario report generation failed — ${(err as Error).message}`,
+    };
+  }
+}
+
+export function formatScenarioMetricsOnly(
+  scenario: NormalizedScenario,
+  result: ScenarioRunResult,
+): string {
+  const lastMetrics = result.metricsPerRound[result.metricsPerRound.length - 1] ?? {};
+
+  const lines = [
+    '══════════════════════════════════════════',
+    `  ${scenario.name} — METRICS`,
+    '══════════════════════════════════════════',
+    '',
+    `  Rounds:    ${result.rounds}`,
+    `  Collapsed: ${result.collapsed ? `Yes (round ${result.collapseRound})` : 'No'}`,
+    `  Hard Violations: ${result.hardViolations.length}`,
+    `  Soft Violations: ${result.softViolations.length}`,
+    `  Invalid Decisions: ${result.invalidDecisions.length}`,
+    '',
+    '  Final Metrics:',
+    ...Object.entries(lastMetrics).map(([k, v]) => `    ${k}: ${v}`),
+    '',
+    '══════════════════════════════════════════',
+  ];
 
   return lines.join('\n');
 }
