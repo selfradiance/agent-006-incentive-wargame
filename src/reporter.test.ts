@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { generateReport, formatMetricsOnly } from './reporter.js';
-import type { SimulationLog, AllMetrics, GameConfig, Archetype } from './types.js';
+import { generateReport, formatMetricsOnly, generateScenarioReport, formatScenarioMetricsOnly } from './reporter.js';
+import type { SimulationLog, AllMetrics, GameConfig, Archetype, NormalizedScenario } from './types.js';
+import type { ScenarioRunResult } from './runner.js';
 
 const mockCreate = vi.fn();
 
@@ -138,5 +139,112 @@ describe('formatMetricsOnly', () => {
     metrics.poolSurvival = { survived: false, completed: false, collapseRound: null };
     const output = formatMetricsOnly(metrics);
     expect(output).toContain('INCOMPLETE');
+  });
+});
+
+// --- v0.3.0: Scenario Reporter ---
+
+const scenarioFixture: NormalizedScenario = {
+  name: 'Test Commons',
+  description: 'Test scenario',
+  agentCount: 3,
+  roles: [],
+  resources: [{ name: 'pool', description: 'Pool', initialValue: 1000, min: 0, max: 1000 }],
+  actions: [{ name: 'extract', description: 'Extract', params: [{ name: 'amount', type: 'number', min: 0, max: 200, description: 'Amount' }], allowedRoles: [] }],
+  observationModel: [{ name: 'poolLevel', type: 'number', visibility: 'public', description: 'Pool' }],
+  rules: [{ description: 'Pool >= 0', type: 'hard' }],
+  ambiguities: [],
+  collapseCondition: 'Pool < 0.01',
+  successCondition: 'Survives all rounds',
+  scenarioClass: 'single-action-simultaneous',
+};
+
+const scenarioArchetypes: Archetype[] = [
+  { index: 0, name: 'Coop', description: 'Cooperative' },
+  { index: 1, name: 'Greedy', description: 'Greedy' },
+  { index: 2, name: 'Moderate', description: 'Moderate' },
+];
+
+function makeScenarioResult(overrides: Partial<ScenarioRunResult> = {}): ScenarioRunResult {
+  return {
+    rounds: 10,
+    finalState: { pool: 800 },
+    metricsPerRound: [
+      { poolLevel: 950, totalWealth: 50 },
+      { poolLevel: 900, totalWealth: 100 },
+    ],
+    softViolations: [],
+    hardViolations: [],
+    collapsed: false,
+    collapseRound: null,
+    invalidDecisions: [],
+    ...overrides,
+  };
+}
+
+describe('generateScenarioReport', () => {
+  it('returns Claude report on success', async () => {
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: '# Scenario Analysis\nThe system survived.' }],
+    } as never);
+
+    const result = await generateScenarioReport(scenarioFixture, scenarioArchetypes, makeScenarioResult());
+
+    expect(result.metricsOnly).toBe(false);
+    expect(result.report).toContain('Scenario Analysis');
+  });
+
+  it('falls back to metrics-only on API failure', async () => {
+    mockCreate.mockRejectedValueOnce(new Error('API down') as never);
+
+    const result = await generateScenarioReport(scenarioFixture, scenarioArchetypes, makeScenarioResult());
+
+    expect(result.metricsOnly).toBe(true);
+    expect(result.report).toBeNull();
+    expect(result.error).toContain('API down');
+  });
+
+  it('falls back on empty response', async () => {
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: '' }],
+    } as never);
+
+    const result = await generateScenarioReport(scenarioFixture, scenarioArchetypes, makeScenarioResult());
+
+    expect(result.metricsOnly).toBe(true);
+    expect(result.error).toContain('empty');
+  });
+});
+
+describe('formatScenarioMetricsOnly', () => {
+  it('includes scenario name and round count', () => {
+    const output = formatScenarioMetricsOnly(scenarioFixture, makeScenarioResult());
+    expect(output).toContain('Test Commons');
+    expect(output).toContain('Rounds:    10');
+  });
+
+  it('shows collapsed status with round number', () => {
+    const output = formatScenarioMetricsOnly(scenarioFixture, makeScenarioResult({
+      collapsed: true,
+      collapseRound: 7,
+    }));
+    expect(output).toContain('Yes (round 7)');
+  });
+
+  it('shows violation and invalid decision counts', () => {
+    const output = formatScenarioMetricsOnly(scenarioFixture, makeScenarioResult({
+      hardViolations: [{ round: 1, description: 'NaN', field: 'pool' }],
+      softViolations: ['Pool low'],
+      invalidDecisions: [{ round: 1, agentIndex: 0, errors: ['bad'] }],
+    }));
+    expect(output).toContain('Hard Violations: 1');
+    expect(output).toContain('Soft Violations: 1');
+    expect(output).toContain('Invalid Decisions: 1');
+  });
+
+  it('displays final metrics from last round', () => {
+    const output = formatScenarioMetricsOnly(scenarioFixture, makeScenarioResult());
+    expect(output).toContain('poolLevel: 900');
+    expect(output).toContain('totalWealth: 100');
   });
 });

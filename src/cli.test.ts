@@ -33,6 +33,81 @@ describe('parseAndValidateArgs', () => {
     expect(() => parseAndValidateArgs(['--fixtures', '--runs=2']))
       .toThrow(/mutually exclusive/);
   });
+
+  // --- v0.3.0: --spec flag ---
+
+  it('accepts --spec with a file path', () => {
+    const flags = parseAndValidateArgs(['--spec', 'examples/commons.txt']);
+    expect(flags.spec).toBe('examples/commons.txt');
+  });
+
+  it('defaults spec to null when not provided', () => {
+    const flags = parseAndValidateArgs([]);
+    expect(flags.spec).toBeNull();
+  });
+
+  // --- v0.3.0: --agents flag ---
+
+  it('accepts --agents when --spec is provided', () => {
+    const flags = parseAndValidateArgs(['--spec', 'test.txt', '--agents', '5']);
+    expect(flags.agents).toBe(5);
+  });
+
+  it('rejects --agents without --spec', () => {
+    expect(() => parseAndValidateArgs(['--agents', '5']))
+      .toThrow(/--agents is only valid with --spec/);
+  });
+
+  it('rejects --agents below minimum (2)', () => {
+    expect(() => parseAndValidateArgs(['--spec', 'test.txt', '--agents', '1']))
+      .toThrow(/Invalid --agents value/);
+  });
+
+  it('rejects --agents above maximum (20)', () => {
+    expect(() => parseAndValidateArgs(['--spec', 'test.txt', '--agents', '21']))
+      .toThrow(/Invalid --agents value/);
+  });
+
+  it('rejects non-integer --agents', () => {
+    expect(() => parseAndValidateArgs(['--spec', 'test.txt', '--agents', '3.5']))
+      .toThrow(/Invalid --agents value/);
+  });
+
+  it('defaults agents to null when not provided', () => {
+    const flags = parseAndValidateArgs(['--spec', 'test.txt']);
+    expect(flags.agents).toBeNull();
+  });
+
+  // --- v0.3.0: --yes flag ---
+
+  it('accepts --yes flag', () => {
+    const flags = parseAndValidateArgs(['--yes']);
+    expect(flags.yes).toBe(true);
+  });
+
+  it('defaults yes to false', () => {
+    const flags = parseAndValidateArgs([]);
+    expect(flags.yes).toBe(false);
+  });
+
+  // --- v0.3.0: --dry-run flag ---
+
+  it('accepts --dry-run flag', () => {
+    const flags = parseAndValidateArgs(['--dry-run']);
+    expect(flags.dryRun).toBe(true);
+  });
+
+  it('defaults dryRun to false', () => {
+    const flags = parseAndValidateArgs([]);
+    expect(flags.dryRun).toBe(false);
+  });
+
+  // --- v0.3.0: mutual exclusion ---
+
+  it('rejects --spec with --fixtures', () => {
+    expect(() => parseAndValidateArgs(['--spec', 'test.txt', '--fixtures']))
+      .toThrow(/--spec and --fixtures are mutually exclusive/);
+  });
 });
 
 // --- Scenario Confirmation Gate ---
