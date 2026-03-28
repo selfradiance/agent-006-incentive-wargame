@@ -134,4 +134,4 @@ Key test categories: economy engine (13), fixture strategies (22), metrics (25),
 
 ## License
 
-Private.
+MIT License
