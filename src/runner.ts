@@ -24,6 +24,7 @@ import {
   processRound,
 } from './economy.js';
 import { RoundDispatcher, normalizeExtraction, validateStrategy } from './sandbox/executor.js';
+import { validateDecision } from './sandbox/validator.js';
 import { computeAllMetrics } from './metrics.js';
 import {
   buildCanonicalStateBattery,
@@ -350,23 +351,20 @@ function checkHardInvariants(
 ): HardInvariantViolation[] {
   const violations: HardInvariantViolation[] = [];
 
-  // Check for NaN in state values
-  const stateStr = JSON.stringify(state);
-  if (stateStr.includes('null') || stateStr.includes('NaN')) {
-    // Deep check for actual NaN/undefined values
-    const checkValue = (val: unknown, path: string) => {
-      if (val === null || val === undefined) return;
-      if (typeof val === 'number' && !Number.isFinite(val)) {
-        violations.push({ round, type: 'nan-detected', details: `${path} = ${val}` });
+  // Deep check for NaN/Infinity in state values
+  // Note: JSON.stringify turns NaN → null, so we always walk the state tree
+  const checkValue = (val: unknown, path: string) => {
+    if (val === null || val === undefined) return;
+    if (typeof val === 'number' && !Number.isFinite(val)) {
+      violations.push({ round, type: 'nan-detected', details: `${path} = ${val}` });
+    }
+    if (typeof val === 'object' && val !== null) {
+      for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+        checkValue(v, `${path}.${k}`);
       }
-      if (typeof val === 'object' && val !== null) {
-        for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
-          checkValue(v, `${path}.${k}`);
-        }
-      }
-    };
-    checkValue(state, 'state');
-  }
+    }
+  };
+  checkValue(state, 'state');
 
   // Check agent arrays have correct length
   for (const [key, val] of Object.entries(state)) {
@@ -437,7 +435,6 @@ export async function runScenarioSimulation(opts: ScenarioRunnerOptions): Promis
       );
 
       // Validate decisions against schema
-      const { validateDecision } = await import('./sandbox/validator.js');
       const validatedDecisions: AgentDecision[] = [];
 
       for (let i = 0; i < scenario.agentCount; i++) {
