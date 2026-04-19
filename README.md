@@ -23,7 +23,7 @@ Incentive systems look sound on paper until agents find the loopholes. Agent 006
 - 7 agent archetypes (commons mode) with hand-written and AI-generated strategies
 - Recursive strategy adaptation via Claude API (campaign mode)
 - Natural language scenario extraction and custom economy generation (scenario mode)
-- Two-VM sandbox architecture: economy VM (persistent per run) + strategy VM (fresh per execution)
+- Sandboxed economy and strategy VM execution with JSON-serialized boundaries between them
 - Hard and soft invariant checking for generated economies
 - 8 original metrics + 3 campaign metrics
 - Claude API findings report generation (single-run, campaign, and scenario modes)
@@ -42,8 +42,14 @@ npx tsx src/cli.ts
 npx tsx src/cli.ts --runs 3
 
 # Scenario mode — custom economy from a spec
-npx tsx src/cli.ts --scenario specs/your-scenario.txt
+npx tsx src/cli.ts --spec examples/public-goods.txt --yes
 ```
+
+Scenario mode is enabled with `--spec <path>`, not `--scenario`.
+
+By default the CLI shows the extracted scenario and prompts for confirmation. Add `--yes` for a non-interactive run.
+
+Scenario spec files define the rules of the economy, but the number of simulation rounds still comes from `--rounds` in the CLI. If you do not pass `--rounds`, scenario mode uses the shared default of `50`.
 
 ## Example
 
